@@ -1,8 +1,8 @@
 module day19
   implicit none
   private
-  public scanner_t, buoys_read, calibrate_all
-  public sort, remove_duplicates, rotation_matrices
+  public scanner_t, buoys_read, calibrate_all, extract_all
+  public rotation_matrices
 
   integer, parameter :: EYE_INDEX = 1, ROT_NULL = -99
 
@@ -18,7 +18,6 @@ module day19
     procedure :: print => scanner_print
   end type
 
-
 contains
 
   pure integer function scanner_nbuoys(this) result(nb)
@@ -28,7 +27,7 @@ contains
     else
       nb = -1
     endif
-  end function
+  end function scanner_nbuoys
 
 
 
@@ -37,13 +36,13 @@ contains
     integer :: diss(size(this%pos,1))
     diss = abs(this%pos-other%pos) 
     d = sum(diss)
-  end function 
+  end function scanner_manhattan
 
 
 
-  pure subroutine scanner_extract_buoys(this, rm, buoys)
+  pure subroutine scanner_extract_buoys(this, rms, buoys)
     class(scanner_t), intent(in) :: this
-    integer, intent(in) :: rm(:,:,:)
+    integer, intent(in) :: rms(:,:,:)
     integer, intent(out) :: buoys(:,:)
 !
 ! Get buoys positions in global co-ordinates
@@ -55,7 +54,7 @@ contains
     if (size(buoys,2) /= this%nb() .or. size(buoys,1) /= size(this%buoys,1)) &
     &   error stop 'extract_buoys - output array shape inconsistent'
     do i = 1, this%nb()
-      buoys(:,i) = matmul(rm(:,:,this%rot), this%buoys(:,i)) + this%pos
+      buoys(:,i) = matmul(rms(:,:,this%rot), this%buoys(:,i)) + this%pos
     end do
   end subroutine scanner_extract_buoys
 
@@ -76,18 +75,46 @@ contains
       print '("Scanner ",i2,"  nb=",i2,"  uncalibrated")', &
       &   this%id, this%nb()
     endif
-    !print '(2(a,i0),a)', 'Scanner id ', this%id, ' (beacons = ', this%nb(),')'
     if (buoys_printed0) then
       print '(3(i6))', this%buoys
       print *
     end if
-  end subroutine
+  end subroutine scanner_print
 
 
 
-  subroutine calibrate_all(scs, rm)
+  pure function extract_all(scs,rms) result(res)
+    type(scanner_t), intent(in) :: scs(:)
+    integer, intent(in) :: rms(:,:,:)
+    integer, allocatable :: res(:,:)
+!
+! Get buoys list from all scanners. Remove duplicates.
+!
+    integer, allocatable :: buoys(:,:)
+    integer :: i, j, nb
+
+    nb = 0
+    do i=1,size(scs)
+      nb = nb + scs(i) % nb()
+    end do
+    allocate(buoys(3, nb))
+    j = 0
+    do i=1, size(scs)
+      call scs(i) % extract_buoys(rms, buoys(:, j+1:j+scs(i)%nb()))
+      j = j+scs(i)%nb()
+    end do
+    call sort(buoys, 3)
+    call sort(buoys, 2)
+    call sort(buoys, 1)
+    res = remove_duplicates(buoys)
+    deallocate(buoys)
+  end function extract_all
+
+
+
+  subroutine calibrate_all(scs, rms)
     type(scanner_t), intent(inout) :: scs(:)
-    integer, intent(in) :: rm(:,:,:)
+    integer, intent(in) :: rms(:,:,:)
 
     integer :: list(2,size(scs)*(size(scs)-1)/2)
     integer :: newlist(2,size(scs)*(size(scs)-1)/2)
@@ -116,7 +143,7 @@ contains
       n_newlist = 0
       print *
       do k=1,n_list
-        call calibrate_pair(scs(list(1,k)), scs(list(2,k)), rm, skipped)
+        call calibrate_pair(scs(list(1,k)), scs(list(2,k)), rms, skipped)
         if (.not. skipped) cycle
         n_newlist = n_newlist + 1
         newlist(:,n_newlist) = list(:,k)
@@ -128,9 +155,9 @@ contains
 
 
 
-  subroutine calibrate_pair(s1, s2, rm, skipped)
+  subroutine calibrate_pair(s1, s2, rms, skipped)
     type(scanner_t), intent(inout) :: s1, s2
-    integer, intent(in) :: rm(:,:,:)
+    integer, intent(in) :: rms(:,:,:)
     logical, intent(out) :: skipped
 !
 ! Orient the calibrated scanner from the pair accordingly and test for all 24
@@ -141,11 +168,11 @@ contains
     integer :: k
 
     skipped = .false.
-    do k=1, size(rm,dim=3)
+    do k=1, size(rms,dim=3)
       if (s1%rot /= ROT_NULL .and. s2%rot == ROT_NULL) then
-        dis = scanner_pair(s1, rm(:,:,s1%rot), s2, rm(:,:,k))
+        dis = scanner_pair(s1, rms(:,:,s1%rot), s2, rms(:,:,k))
       elseif (s1%rot == ROT_NULL .and. s2%rot /= ROT_NULL) then
-        dis = scanner_pair(s1, rm(:,:,k), s2, rm(:,:,s2%rot))
+        dis = scanner_pair(s1, rms(:,:,k), s2, rms(:,:,s2%rot))
       elseif (s1%rot /= ROT_NULL .and. s2%rot /= ROT_NULL) then
         return ! both scanners calibrated, nothing to do
       else
@@ -205,8 +232,7 @@ contains
     integer :: i, j, ij
     integer :: b(3), apos(3,s1%nb())
 
-!   apos = s1%buoys
-    do i=1, s1%nb() !size(apos,2)
+    do i=1, s1%nb()
       apos(:,i) = matmul(rm1, s1%buoys(:,i))
     end do
 
@@ -227,7 +253,6 @@ contains
     integer map(2, s1%nb()*s2%nb())
 !
 ! Allows to track corresponding entries for vectors [a],[b] in the list "dis"
-!
 ! This function should be called together with "scanner_pair".
 !
     integer :: i, j, ij
@@ -305,7 +330,7 @@ contains
 
     ! if the last item is part of block (this will be rarely run)
     if (inrow >= INROW_REQ) then
- print *, 'rare - rare'
+print *, 'rare - rare'
         tmp(:size(dis,1),  nf+1:nf+inrow) = dis(:,i-inrow:i-1)
         tmp(size(dis,1)+1:,nf+1:nf+inrow) = map(:,i-inrow:i-1)
         nf = nf + inrow
@@ -340,7 +365,7 @@ contains
     tmp(:,uniq) = pos(:,i-1)
     allocate(cpos(size(pos,1),uniq))
     cpos = tmp(:,1:uniq)
-  end function
+  end function remove_duplicates
 
 
 
@@ -369,8 +394,6 @@ contains
     do i=1, 3
     do j=1, 3
       if (j==i) cycle
-      !do ii=-1,1,2
-      !do jj=-1,1,2
       do ii=1,-1,-2
       do jj=1,-1,-2
         imat = imat + 1
@@ -404,7 +427,9 @@ contains
   subroutine buoys_read(file, scanners)
     character(len=*), intent(in) :: file
     type(scanner_t), allocatable, intent(out) :: scanners(:)
-
+!
+! Parse input
+!
     integer, parameter :: NSMAX = 100, BMAX = 100, DIM=3
     type(scanner_t) :: tmp_scanners(NSMAX)
     integer :: tmp_buoys(DIM,BMAX)
